@@ -4,3 +4,7 @@ numpy
 openpyxl
 scikit-learn
 plotly
+gspread
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
