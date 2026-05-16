@@ -1,6 +1,6 @@
 """
 Pragathi Dynamic Predictive & Inventory Optimization Engine
-With Pie Charts and Bar Graphs for Better Visualization
+Simplified with Optional Charts and Reason Analysis
 """
 
 import streamlit as st
@@ -8,7 +8,6 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import io
-import re
 import warnings
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
@@ -53,6 +52,13 @@ st.markdown("""
         border-left: 4px solid #ffc107;
         margin: 0.5rem 0;
     }
+    .info-card {
+        background-color: #d1ecf1;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        border-left: 4px solid #17a2b8;
+        margin: 0.5rem 0;
+    }
     .stButton > button {
         background-color: #4CAF50;
         color: white;
@@ -69,8 +75,6 @@ st.markdown("""
 # Session state initialization
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = True
-if 'data' not in st.session_state:
-    st.session_state.data = None
 if 'cleaned_data' not in st.session_state:
     st.session_state.cleaned_data = None
 if 'target_column' not in st.session_state:
@@ -79,10 +83,11 @@ if 'predictions' not in st.session_state:
     st.session_state.predictions = None
 if 'inventory_results' not in st.session_state:
     st.session_state.inventory_results = None
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
 
 def auto_detect_target(df):
     """Auto-detect target column"""
-    # Exclude ID-like columns
     exclude_patterns = ['id', 'index', 'key', 'row', 'date', 'time', 'stock', 'sku']
     
     numeric_cols = df.select_dtypes(include=[np.number]).columns
@@ -93,7 +98,6 @@ def auto_detect_target(df):
         if not any(p in col_lower for p in exclude_patterns):
             candidates.append(col)
     
-    # Score candidates
     target_keywords = ['sales', 'demand', 'revenue', 'quantity', 'qty', 'price', 'amount', 'value']
     
     best_col = None
@@ -116,12 +120,10 @@ def auto_detect_target(df):
 
 def clean_data(df):
     """Basic data cleaning"""
-    original_rows = len(df)
     df = df.dropna(how='all')
     df = df.dropna(axis=1, how='all')
     df = df.drop_duplicates()
     
-    # Fill missing values
     numeric_cols = df.select_dtypes(include=[np.number]).columns
     for col in numeric_cols:
         if df[col].isnull().any():
@@ -136,7 +138,7 @@ def clean_data(df):
 
 def auto_detect_inventory_columns(df):
     """Detect inventory columns"""
-    detected = {'stock_col': None, 'lead_time_col': None, 'sku_col': None}
+    detected = {'stock_col': None, 'lead_time_col': None, 'sku_col': None, 'article_col': None}
     
     for col in df.columns:
         col_lower = col.lower()
@@ -144,35 +146,71 @@ def auto_detect_inventory_columns(df):
             detected['stock_col'] = col
         if any(x in col_lower for x in ['lead', 'delivery', 'lead_time']):
             detected['lead_time_col'] = col
-        if any(x in col_lower for x in ['sku', 'product', 'item', 'product_id']):
+        if any(x in col_lower for x in ['sku', 'product', 'item']):
             detected['sku_col'] = col
+        if any(x in col_lower for x in ['article', 'artikel', 'art_no']):
+            detected['article_col'] = col
     
     return detected
 
+def analyze_reasons(df, target_col, date_col=None):
+    """Analyze reasons for increase/decrease in sales/inventory"""
+    reasons = {}
+    
+    # Calculate overall trend
+    if len(df) > 1 and target_col in df.columns:
+        first_value = df[target_col].iloc[0]
+        last_value = df[target_col].iloc[-1]
+        
+        if last_value > first_value:
+            percent_change = ((last_value - first_value) / first_value) * 100
+            reasons['trend'] = f"📈 **Increasing** by {percent_change:.1f}%"
+            reasons['trend_explanation'] = f"Your {target_col} is growing. This could be due to increased demand, successful marketing, or seasonal factors."
+        elif last_value < first_value:
+            percent_change = ((first_value - last_value) / first_value) * 100
+            reasons['trend'] = f"📉 **Decreasing** by {percent_change:.1f}%"
+            reasons['trend_explanation'] = f"Your {target_col} is declining. Consider checking inventory levels, pricing, or market conditions."
+        else:
+            reasons['trend'] = f"➡️ **Stable**"
+            reasons['trend_explanation'] = f"Your {target_col} remains stable, indicating consistent demand patterns."
+    
+    # Analyze peak periods
+    if date_col and date_col in df.columns:
+        df['temp_date'] = pd.to_datetime(df[date_col])
+        df['month'] = df['temp_date'].dt.month
+        monthly_avg = df.groupby('month')[target_col].mean()
+        best_month = monthly_avg.idxmax()
+        reasons['best_month'] = f"📅 Best month: Month {best_month} with average {monthly_avg.max():.0f} units"
+        reasons['best_month_explanation'] = f"Month {best_month} shows highest {target_col}. Plan inventory accordingly."
+    
+    # Analyze outliers
+    mean_val = df[target_col].mean()
+    std_val = df[target_col].std()
+    high_outliers = df[df[target_col] > mean_val + 2*std_val]
+    if len(high_outliers) > 0:
+        reasons['outliers'] = f"⚠️ Found {len(high_outliers)} unusually high values"
+        reasons['outliers_explanation'] = "These could be promotional periods, holidays, or data entry errors."
+    
+    return reasons
+
 def train_model(df, target_col):
     """Train Random Forest model"""
-    # Prepare data
     X = df.drop(columns=[target_col])
     y = df[target_col]
     
-    # Encode categorical
     for col in X.select_dtypes(include=['object']).columns:
         X[col] = LabelEncoder().fit_transform(X[col].astype(str))
     
     X = X.fillna(0)
     
-    # Split data
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
     
-    # Train model
     model = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     model.fit(X_train, y_train)
     
-    # Predict
     predictions = model.predict(X)
     df[f'Predicted_{target_col}'] = predictions
     
-    # Calculate metrics
     y_pred_test = model.predict(X_test)
     mae = mean_absolute_error(y_test, y_pred_test)
     r2 = r2_score(y_test, y_pred_test)
@@ -224,7 +262,6 @@ def main():
     )
     
     if uploaded_file:
-        # Load file
         try:
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
@@ -241,16 +278,6 @@ def main():
             # Show preview
             with st.expander("👁️ Data Preview (First 5 rows)", expanded=False):
                 st.dataframe(df.head(), use_container_width=True)
-            
-            # Show column info
-            st.markdown("### 📊 Column Types")
-            col_types = []
-            for col in df.columns:
-                if df[col].dtype in ['int64', 'float64']:
-                    col_types.append({"Column": col, "Type": "🟢 Numeric"})
-                else:
-                    col_types.append({"Column": col, "Type": "🟡 Text/Categorical"})
-            st.dataframe(pd.DataFrame(col_types), use_container_width=True)
             
             # Target detection
             st.markdown("### 🎯 Target Selection")
@@ -277,105 +304,101 @@ def main():
             st.session_state.target_column = target_col
             
             # Run analysis button
-            if st.button("🚀 Run Predictive Optimization", use_container_width=True):
-                with st.spinner("🔄 Training models and analyzing data... This may take a moment."):
+            if st.button("✅ Run Predictive Optimization", use_container_width=True):
+                with st.spinner("🔄 Analyzing your data..."):
                     try:
                         # Train model
                         df_result, model, mae, r2 = train_model(df, target_col)
                         st.session_state.predictions = df_result
                         
-                        # Display metrics
-                        st.markdown("### 📈 Model Performance")
+                        # Detect inventory columns
+                        inv_cols = auto_detect_inventory_columns(df_result)
+                        
+                        # Calculate inventory if stock column exists
+                        if inv_cols['stock_col']:
+                            df_inv = calculate_inventory(df_result, target_col, inv_cols)
+                            st.session_state.inventory_results = df_inv
+                        else:
+                            df_inv = df_result
+                            st.session_state.inventory_results = df_result
+                        
+                        st.session_state.analysis_complete = True
+                        
+                        # ============ COMPLETION MESSAGE ============
+                        st.success("✅ Analysis Complete!")
+                        
+                        # ============ PRODUCT/ARTICLE INFORMATION ============
+                        st.markdown("### 📦 Product & Article Information")
+                        
+                        if inv_cols.get('sku_col') or inv_cols.get('article_col'):
+                            product_col = inv_cols.get('sku_col') or inv_cols.get('article_col')
+                            
+                            col1, col2 = st.columns(2)
+                            with col1:
+                                st.markdown(f"**🔑 Product/Article Column:** `{product_col}`")
+                                st.markdown(f"**📊 Total Products:** {df_inv[product_col].nunique()}")
+                            with col2:
+                                unique_products = df_inv[product_col].unique()[:10]
+                                st.markdown("**🏷️ Sample Products/Articles:**")
+                                st.write(", ".join([str(p) for p in unique_products[:5]]))
+                        else:
+                            st.info("ℹ️ No product/article column detected. Add columns named 'SKU', 'Product', or 'Article' for product-level insights.")
+                        
+                        # ============ PREDICTION RESULTS ============
+                        st.markdown("### 📊 Prediction Results")
+                        
                         col1, col2 = st.columns(2)
                         with col1:
                             st.metric("📉 Mean Absolute Error (MAE)", f"{mae:.2f}")
                         with col2:
-                            st.metric("📈 R² Score", f"{r2:.3f}")
+                            st.metric("📈 R² Score (Accuracy)", f"{r2:.3f}")
                         
-                        # ============ BAR CHARTS FOR PREDICTIONS ============
-                        st.markdown("### 📊 Prediction Distribution")
+                        # Show prediction table with product info
+                        st.markdown("#### 🔮 Predicted Values")
                         
-                        # Bar Chart 1: Actual vs Predicted Averages
-                        comparison_df = pd.DataFrame({
-                            'Metric': ['Actual Average', 'Predicted Average'],
-                            'Value': [df_result[target_col].mean(), df_result[f'Predicted_{target_col}'].mean()]
-                        })
+                        display_cols = [target_col, f'Predicted_{target_col}']
+                        if inv_cols.get('sku_col'):
+                            display_cols = [inv_cols['sku_col']] + display_cols
+                        elif inv_cols.get('article_col'):
+                            display_cols = [inv_cols['article_col']] + display_cols
                         
-                        fig1 = px.bar(
-                            comparison_df, 
-                            x='Metric', 
-                            y='Value',
-                            title=f'Actual vs Predicted {target_col} (Average Values)',
-                            text='Value',
-                            color='Metric',
-                            color_discrete_map={'Actual Average': '#4CAF50', 'Predicted Average': '#FF6B6B'}
-                        )
-                        fig1.update_traces(texttemplate='%{text:.2f}', textposition='outside')
-                        fig1.update_layout(height=450, showlegend=False)
-                        st.plotly_chart(fig1, use_container_width=True)
+                        st.dataframe(df_inv[display_cols].head(10), use_container_width=True)
                         
-                        # Bar Chart 2: Top 10 Predictions
-                        st.markdown("### 📈 Top 10 Highest Predictions")
-                        top_predictions = df_result.nlargest(10, f'Predicted_{target_col}')[[target_col, f'Predicted_{target_col}']]
-                        top_predictions = top_predictions.reset_index()
+                        # ============ REASON ANALYSIS ============
+                        st.markdown("### 🔍 Reason Analysis")
                         
-                        fig2 = px.bar(
-                            top_predictions,
-                            x=top_predictions.index,
-                            y=f'Predicted_{target_col}',
-                            title=f'Top 10 Predicted {target_col} Values',
-                            labels={'x': 'Row Number', f'Predicted_{target_col}': f'Predicted {target_col}'},
-                            color=f'Predicted_{target_col}',
-                            color_continuous_scale='Viridis',
-                            text=f'Predicted_{target_col}'
-                        )
-                        fig2.update_traces(texttemplate='%{text:.0f}', textposition='outside')
-                        fig2.update_layout(height=450)
-                        st.plotly_chart(fig2, use_container_width=True)
+                        # Detect date column
+                        date_col = None
+                        for col in df.columns:
+                            if 'date' in col.lower() or 'time' in col.lower():
+                                date_col = col
+                                break
                         
-                        # Bar Chart 3: Distribution of Predictions
-                        st.markdown("### 📊 Prediction Value Distribution")
-                        fig3 = px.histogram(
-                            df_result,
-                            x=f'Predicted_{target_col}',
-                            nbins=20,
-                            title=f'Distribution of Predicted {target_col} Values',
-                            color_discrete_sequence=['#667eea'],
-                            labels={f'Predicted_{target_col}': f'Predicted {target_col}', 'count': 'Frequency'}
-                        )
-                        fig3.update_layout(height=400)
-                        st.plotly_chart(fig3, use_container_width=True)
+                        reasons = analyze_reasons(df_inv, target_col, date_col)
                         
-                        # Show prediction table
-                        with st.expander("📋 View Predictions Table", expanded=False):
-                            display_df = df_result[[target_col, f'Predicted_{target_col}']].head(20)
-                            st.dataframe(display_df, use_container_width=True)
+                        # Display reasons
+                        if 'trend' in reasons:
+                            st.markdown(f"**{reasons['trend']}**")
+                            st.markdown(f"💡 {reasons['trend_explanation']}")
                         
-                        # ============ INVENTORY OPTIMIZATION ============
-                        st.markdown("### 📦 Inventory Optimization")
+                        if 'best_month' in reasons:
+                            st.markdown(f"**{reasons['best_month']}**")
+                            st.markdown(f"💡 {reasons['best_month_explanation']}")
                         
-                        inv_cols = auto_detect_inventory_columns(df_result)
+                        if 'outliers' in reasons:
+                            st.markdown(f"**{reasons['outliers']}**")
+                            st.markdown(f"💡 {reasons['outliers_explanation']}")
                         
-                        if inv_cols['stock_col']:
-                            df_inv = calculate_inventory(df_result, target_col, inv_cols)
-                            st.session_state.inventory_results = df_inv
-                            
-                            # Summary metrics
-                            trigger_count = (df_inv['Procurement_Status'] == "⚠️ TRIGGER PURCHASE ORDER").sum()
-                            sufficient_count = (df_inv['Procurement_Status'] == "✅ STOCK SUFFICIENT").sum()
-                            total_order = df_inv['Recommended_Order_Qty'].sum()
-                            
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("🚨 Items Needing Order", trigger_count, delta=f"{(trigger_count/len(df_inv)*100):.1f}%")
-                            with col2:
-                                st.metric("✅ Items Sufficient", sufficient_count)
-                            with col3:
-                                st.metric("📦 Total Order Quantity", f"{int(total_order):,}")
-                            
-                            # ============ PIE CHART - Procurement Status ============
-                            st.markdown("### 🥧 Procurement Status Breakdown")
-                            
+                        # ============ OPTIONAL CHARTS (User Selects) ============
+                        st.markdown("### 📈 Optional Charts")
+                        st.info("💡 Select the charts you want to view below:")
+                        
+                        show_pie = st.checkbox("🥧 Show Procurement Status Pie Chart", value=False)
+                        show_bar = st.checkbox("📊 Show Top Items to Order (Bar Graph)", value=False)
+                        show_hist = st.checkbox("📉 Show Prediction Distribution (Histogram)", value=False)
+                        
+                        # Pie Chart
+                        if show_pie and inv_cols.get('stock_col'):
                             procurement_counts = df_inv['Procurement_Status'].value_counts()
                             fig_pie = px.pie(
                                 values=procurement_counts.values,
@@ -387,29 +410,26 @@ def main():
                             fig_pie.update_traces(textposition='inside', textinfo='percent+label')
                             fig_pie.update_layout(height=450)
                             st.plotly_chart(fig_pie, use_container_width=True)
-                            
-                            # ============ BAR CHART - Top Items to Order ============
-                            st.markdown("### 📊 Top 10 Items to Order")
-                            
+                        
+                        # Bar Chart - Top Items to Order
+                        if show_bar and inv_cols.get('stock_col'):
                             items_to_order = df_inv[df_inv['Recommended_Order_Qty'] > 0].nlargest(10, 'Recommended_Order_Qty')
                             
                             if len(items_to_order) > 0:
-                                # Use SKU column if available, otherwise use index
-                                if inv_cols['sku_col']:
+                                if inv_cols.get('sku_col'):
                                     x_axis = inv_cols['sku_col']
-                                    items_to_order_display = items_to_order[[x_axis, 'Recommended_Order_Qty', 'Safety_Stock']]
+                                elif inv_cols.get('article_col'):
+                                    x_axis = inv_cols['article_col']
                                 else:
-                                    items_to_order_display = items_to_order.reset_index()
+                                    items_to_order = items_to_order.reset_index()
                                     x_axis = 'index'
-                                    items_to_order_display = items_to_order_display.rename(columns={'index': 'Item Number'})
-                                    x_axis = 'Item Number'
                                 
                                 fig_bar = px.bar(
-                                    items_to_order_display,
+                                    items_to_order,
                                     x=x_axis,
                                     y='Recommended_Order_Qty',
                                     title='Top 10 Items Requiring Purchase Order',
-                                    labels={'Recommended_Order_Qty': 'Recommended Order Quantity', x_axis: 'Item'},
+                                    labels={'Recommended_Order_Qty': 'Recommended Order Quantity', x_axis: 'Product/Article'},
                                     color='Recommended_Order_Qty',
                                     color_continuous_scale='Reds',
                                     text='Recommended_Order_Qty'
@@ -418,69 +438,64 @@ def main():
                                 fig_bar.update_layout(height=450)
                                 st.plotly_chart(fig_bar, use_container_width=True)
                             else:
-                                st.info("✅ No items need ordering at this time!")
+                                st.info("✅ No items need ordering - no bar chart to display")
+                        
+                        # Histogram
+                        if show_hist:
+                            fig_hist = px.histogram(
+                                df_inv,
+                                x=f'Predicted_{target_col}',
+                                nbins=20,
+                                title=f'Distribution of Predicted {target_col} Values',
+                                color_discrete_sequence=['#667eea'],
+                                labels={f'Predicted_{target_col}': f'Predicted {target_col}', 'count': 'Frequency'}
+                            )
+                            fig_hist.update_layout(height=450)
+                            st.plotly_chart(fig_hist, use_container_width=True)
+                        
+                        # ============ INVENTORY SUMMARY ============
+                        if inv_cols.get('stock_col'):
+                            st.markdown("### 📦 Inventory Summary")
                             
-                            # Show procurement table with highlighting
+                            trigger_count = (df_inv['Procurement_Status'] == "⚠️ TRIGGER PURCHASE ORDER").sum()
+                            sufficient_count = (df_inv['Procurement_Status'] == "✅ STOCK SUFFICIENT").sum()
+                            total_order = df_inv['Recommended_Order_Qty'].sum()
+                            
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("🚨 Items Needing Order", trigger_count)
+                            with col2:
+                                st.metric("✅ Items Sufficient", sufficient_count)
+                            with col3:
+                                st.metric("📦 Total Order Quantity", f"{int(total_order):,}")
+                            
+                            # Detailed procurement table with highlighting
                             st.markdown("#### 📋 Detailed Procurement Plan")
-                            display_cols = ['Procurement_Status', 'Safety_Stock', 'Reorder_Point', 'Recommended_Order_Qty']
-                            if inv_cols['sku_col']:
-                                display_cols = [inv_cols['sku_col']] + display_cols
                             
-                            # Add highlighting
                             def highlight_trigger(row):
                                 if row['Procurement_Status'] == "⚠️ TRIGGER PURCHASE ORDER":
                                     return ['background-color: #ffcccc'] * len(row)
                                 return [''] * len(row)
                             
+                            display_cols = ['Procurement_Status', 'Safety_Stock', 'Reorder_Point', 'Recommended_Order_Qty']
+                            if inv_cols.get('sku_col'):
+                                display_cols = [inv_cols['sku_col']] + display_cols
+                            elif inv_cols.get('article_col'):
+                                display_cols = [inv_cols['article_col']] + display_cols
+                            
                             styled_df = df_inv[display_cols].head(20).style.apply(highlight_trigger, axis=1)
                             st.dataframe(styled_df, use_container_width=True)
                             
-                            # Alert if items need ordering
                             if trigger_count > 0:
-                                st.warning(f"⚠️ **URGENT:** {trigger_count} items need immediate reordering! Check the table above for details.")
+                                st.warning(f"⚠️ **Action Required:** {trigger_count} items need immediate reordering!")
                             else:
-                                st.success("✅ All items have sufficient stock! No immediate action needed.")
-                        else:
-                            st.info("💡 **Tip:** Add a column named 'Stock', 'Inventory', or 'Current_Stock' to enable inventory optimization calculations.")
+                                st.success("✅ All items have sufficient stock!")
                         
-                        # ============ SIMPLE EXPLANATIONS ============
-                        st.markdown("### 📋 What This Means For You")
-                        
-                        if r2 > 0.7:
-                            quality_text = "excellent"
-                            quality_emoji = "🌟"
-                        elif r2 > 0.5:
-                            quality_text = "good"
-                            quality_emoji = "👍"
-                        else:
-                            quality_text = "moderate"
-                            quality_emoji = "📊"
-                        
-                        explanation = f"""
-                        <div class="success-card">
-                        <strong>🤖 Model Summary:</strong><br>
-                        • Best model: <strong>Random Forest</strong><br>
-                        • Average prediction error: <strong>{mae:.2f}</strong> units<br>
-                        • Model explains <strong>{r2*100:.1f}%</strong> of the patterns in your data ({quality_text} {quality_emoji})<br>
-                        </div>
-                        """
-                        st.markdown(explanation, unsafe_allow_html=True)
-                        
-                        if inv_cols.get('stock_col') and trigger_count > 0:
-                            st.markdown(f"""
-                            <div class="warning-card">
-                            <strong>📦 Inventory Recommendations:</strong><br>
-                            • <strong>{trigger_count}</strong> out of <strong>{len(df_inv)}</strong> items need reordering<br>
-                            • Total order quantity: <strong>{int(total_order):,}</strong> units<br>
-                            • Recommended safety stock level: <strong>{df_inv['Safety_Stock'].mean():.0f}</strong> units average<br>
-                            </div>
-                            """, unsafe_allow_html=True)
-                        
-                        # ============ DOWNLOAD BUTTON ============
-                        st.markdown("### 📥 Export Results")
+                        # ============ DOWNLOAD ============
+                        st.markdown("### 📥 Download Results")
                         
                         csv_buffer = io.StringIO()
-                        df_result.to_csv(csv_buffer, index=False)
+                        df_inv.to_csv(csv_buffer, index=False)
                         csv_data = csv_buffer.getvalue().encode()
                         
                         st.download_button(
@@ -491,8 +506,7 @@ def main():
                             use_container_width=True
                         )
                         
-                        st.balloons()
-                        st.success("✅ Analysis complete! Your results are ready to download.")
+                        st.info("✅ Analysis complete! Use the checkboxes above to view additional charts.")
                         
                     except Exception as e:
                         st.error(f"❌ Error during analysis: {str(e)}")
@@ -514,32 +528,21 @@ def main():
             2. **Select target column** - Choose what you want to predict (e.g., Sales, Quantity)
             3. **Click Run** - The AI will analyze and optimize
             
-            ### 📊 What you need:
-            - At least 10 rows of data
-            - A numeric column to predict (like sales or demand)
-            - Optional: Stock/Inventory column for procurement recommendations
+            ### 📊 What you'll see:
+            - **Product/Article numbers** with predictions
+            - **Reasons for increase/decrease** in sales
+            - **Predicted values** for each product
+            - **Optional charts** (select what you want to see)
+            - **Procurement recommendations**
             
             ### 🎯 Features:
             - Automatic data cleaning
-            - Demand prediction using Random Forest
-            - **Pie charts** for procurement status breakdown
-            - **Bar graphs** for top items to order
+            - Sales/Inventory prediction
+            - Trend analysis with explanations
+            - Product/Article level insights
             - Safety stock calculation
-            - Reorder point recommendations
             - CSV export of results
             """)
-        
-        # Example data preview
-        st.markdown("### 📋 Example Data Format")
-        example_df = pd.DataFrame({
-            'Date': ['2024-01-01', '2024-01-02', '2024-01-03'],
-            'Product': ['Product A', 'Product B', 'Product A'],
-            'Sales': [100, 150, 120],
-            'Current_Stock': [500, 300, 480],
-            'Lead_Time': [5, 7, 5]
-        })
-        st.dataframe(example_df, use_container_width=True)
-        st.caption("💡 Your file should have similar columns. 'Sales' would be your target column.")
 
 if __name__ == "__main__":
     main()
