@@ -57,7 +57,7 @@ st.markdown("""
 # Session state initialization
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = True  # Skip auth for simplicity
-if 'data' not in st_session_state:
+if 'data' not in st.session_state:
     st.session_state.data = None
 if 'cleaned_data' not in st.session_state:
     st.session_state.cleaned_data = None
