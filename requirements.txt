@@ -4,9 +4,3 @@ numpy
 openpyxl
 scikit-learn
 plotly
-xgboost
-lightgbm
-shap
-fpdf2
-passlib
-bcrypt
